@@ -1,0 +1,8 @@
+# Abhängigkeiten für server.py (Second-Brain-Wiki MCP-Server)
+# Getestet mit Python 3.11
+
+# MCP-SDK v2 (MCPServer, Auth, streamable-http; bringt uvicorn/starlette mit)
+mcp>=2.3.0,<3
+
+# wird in server.py direkt importiert (AnyHttpUrl)
+pydantic>=2.14,<3

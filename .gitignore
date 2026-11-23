@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtuelle Umgebung
+.venv/
+venv/
+
+# Lokale Konfiguration: Pfade und Key-Hashes je Installation
+config.json
+
+# Editor / Betriebssystem
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Claude Code (lokale Einstellungen)
+.claude/settings.local.json

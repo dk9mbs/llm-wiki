@@ -1,0 +1,67 @@
+# systemd-Unit für den SecondBrainWiki-MCP-Server
+#
+# Annahmen (bei Bedarf anpassen):
+#   Programm + venv:  /opt/llm-wiki        (server.py, config.json, .venv/)
+#   Wiki-Repo:        /srv/claude-wiki     (= "wiki_dir" in config.json)
+#   Dienstkonto:      llm-wiki             (Systembenutzer ohne Login)
+#
+# Installation:
+#   sudo cp llm-wiki.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now llm-wiki
+#   journalctl -u llm-wiki -f
+
+[Unit]
+Description=SecondBrainWiki MCP-Server
+Documentation=file:///opt/llm-wiki/README.md
+After=network-online.target
+Wants=network-online.target
+# Liegt das Wiki auf einem Netzlaufwerk, den Mount hier eintragen, z. B.:
+# RequiresMountsFor=/srv/claude-wiki
+
+[Service]
+Type=simple
+User=llm-wiki
+Group=llm-wiki
+WorkingDirectory=/opt/llm-wiki
+ExecStart=/opt/llm-wiki/.venv/bin/python /opt/llm-wiki/server.py
+
+# Ausgaben sofort ins Journal schreiben
+Environment=PYTHONUNBUFFERED=1
+# git braucht ein HOME und eine Identität für Commits
+Environment=HOME=/var/lib/llm-wiki
+Environment="GIT_AUTHOR_NAME=SecondBrainWiki MCP"
+Environment=GIT_AUTHOR_EMAIL=llm-wiki@localhost
+Environment="GIT_COMMITTER_NAME=SecondBrainWiki MCP"
+Environment=GIT_COMMITTER_EMAIL=llm-wiki@localhost
+
+Restart=on-failure
+RestartSec=5
+
+# --- Härtung ---------------------------------------------------------------
+# Dateisystem schreibgeschützt bis auf das Wiki und das State-Verzeichnis.
+# Hinweis: config.json muss vorhanden sein – der Dienst kann sie unter
+# /opt/llm-wiki nicht selbst anlegen.
+ProtectSystem=strict
+ReadWritePaths=/srv/claude-wiki
+StateDirectory=llm-wiki
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
