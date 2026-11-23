@@ -256,28 +256,44 @@ Den in Schritt 3 angezeigten API-Key sofort notieren, er wird nur einmal ausgege
 
 ## Apache als Reverse Proxy
 
-Damit andere Rechner den Server erreichen, nimmt Apache HTTPS-Anfragen entgegen und leitet sie an den Server auf `127.0.0.1:8000` weiter. Die Konfiguration liegt unter [`deploy/apache-llm-wiki.conf`](deploy/apache-llm-wiki.conf).
+Damit andere Rechner den Server erreichen, wird er unter `/mcp` in eine **bestehende** HTTPS-Site eingebunden. Apache nimmt die Anfragen entgegen und leitet sie an den Server auf `127.0.0.1:8000` weiter. Das Snippet liegt unter [`deploy/apache-llm-wiki.conf`](deploy/apache-llm-wiki.conf).
 
-Sie
+Es enthält nur einen `<Location /mcp>`-Block, der
 
-- leitet HTTP auf HTTPS um,
-- sperrt alle Pfade außer `/mcp`,
-- lässt `/mcp` nur mit gültigem Bearer-Token durch (`Require expr`),
-- reicht Antworten ungepuffert und unkomprimiert durch (`flushpackets=on`, `no-gzip`) und erlaubt lange offene Verbindungen (`ProxyTimeout 3600`), wie Streamable HTTP sie braucht.
+- `/mcp` nur mit gültigem Bearer-Token durchlässt (`Require expr`),
+- Antworten ungepuffert und unkomprimiert durchreicht (`flushpackets=on`, `no-gzip`) und lange offene Verbindungen erlaubt (`timeout=3600`), wie Streamable HTTP sie braucht.
+
+Der Rest der Site (andere Pfade, TLS, Logs) bleibt unverändert.
 
 ### Einrichtung
 
-In der Datei `ServerName`, die Zertifikatspfade und `<Token>` anpassen, dann:
+Im Snippet `<Token>` eintragen, dann:
 
 ```bash
-sudo a2enmod ssl proxy proxy_http
-sudo cp deploy/apache-llm-wiki.conf /etc/apache2/sites-available/llm-wiki.conf
-sudo chmod 640 /etc/apache2/sites-available/llm-wiki.conf
-sudo a2ensite llm-wiki
+sudo a2enmod proxy proxy_http
+sudo cp deploy/apache-llm-wiki.conf /etc/apache2/llm-wiki-mcp.conf
+sudo chown root:root /etc/apache2/llm-wiki-mcp.conf
+sudo chmod 640 /etc/apache2/llm-wiki-mcp.conf
+```
+
+In der bestehenden Site unter `/etc/apache2/sites-available/` (in `sites-enabled/` liegt nur der Link darauf) innerhalb von `<VirtualHost *:443>` einbinden:
+
+```apache
+<VirtualHost *:443>
+    ServerName intranet.example.local
+    # … bestehende Konfiguration …
+
+    Include /etc/apache2/llm-wiki-mcp.conf
+
+    # … z. B. ProxyPass / http://… – muss NACH dem Include stehen
+</VirtualHost>
+```
+
+```bash
 sudo apachectl configtest && sudo systemctl reload apache2
 ```
 
-Die Befehle gelten für Debian/Ubuntu. Unter RHEL/Rocky die Datei nach `/etc/httpd/conf.d/` kopieren und `httpd` neu laden.
+Die Befehle gelten für Debian/Ubuntu. Unter RHEL/Rocky das Snippet z. B. nach `/etc/httpd/llm-wiki-mcp.conf` kopieren (nicht nach `conf.d/`, das wird global geladen) und `httpd` neu laden.
 
 ### Token
 
@@ -298,8 +314,10 @@ Neuer Benutzer = Key mit `neuer-key` erzeugen, in die Apache-Konfiguration eintr
 ### Hinweise
 
 - **Klartext-Tokens:** Anders als `config.json` (nur Hashes) enthält die Apache-Konfiguration die Keys im Klartext. Daher `chmod 640` und ins Git-Repo nur die Fassung mit Platzhaltern.
-- **`ProxyPreserveHost Off` nicht ändern:** Das MCP-SDK prüft den Host-Header (Schutz gegen DNS-Rebinding) und lehnt den öffentlichen Hostnamen mit `421` ab. Mit `Off` sieht der Server `127.0.0.1:8000`.
-- **Reihenfolge der `<Location>`-Blöcke:** `<Location />` (alles sperren) muss vor `<Location /mcp>` stehen, weil spätere Blöcke frühere überschreiben.
+- **Nur im `<VirtualHost *:443>` einbinden**, nicht im Port-80-VirtualHost: Ohne TLS ginge der Token im Klartext über das Netz.
+- **`ProxyPreserveHost Off` nicht ändern:** Das MCP-SDK prüft den Host-Header (Schutz gegen DNS-Rebinding) und lehnt den öffentlichen Hostnamen mit `421` ab. Mit `Off` sieht der Server `127.0.0.1:8000`. Die Einstellung steht im `<Location /mcp>`-Block und gilt nur dort, die übrige Site behält ihre.
+- **Vorhandenes `ProxyPass /`:** Leitet die Site schon alles an ein anderes Backend weiter, muss das `Include` davor stehen. Sonst landen Anfragen an `/mcp` beim falschen Backend.
+- **Vorhandene Anmeldung:** Schützt die Site `/` z. B. mit Basic Auth, ersetzt der `Require`-Eintrag im Snippet diese Regel für `/mcp`. Clients brauchen dort nur den Bearer-Token.
 - **Clients** verwenden dann `https://<ServerName>/mcp` statt `http://127.0.0.1:8000/mcp`, siehe [Client anbinden](#client-anbinden).
 
 ## Client anbinden
@@ -428,6 +446,6 @@ append_page(
 | Dienst startet nicht (`systemctl status llm-wiki` zeigt `failed`) | `journalctl -u llm-wiki -n 50` lesen. Häufig: `config.json` fehlt oder ist für `llm-wiki` nicht lesbar, `wiki_dir` zeigt noch auf einen Windows-Pfad, oder das Wiki liegt nicht unter `ReadWritePaths`. |
 | `Read-only file system` beim Schreiben (Linux-Dienst) | Das Wiki liegt außerhalb von `ReadWritePaths` in der Unit. Pfad dort eintragen, `daemon-reload`, neu starten. |
 | `403 Forbidden` von Apache (`AH01630: client denied by server configuration`) | Token fehlt oder steht nicht in der `Require expr`-Zeile. Header und Apache-Konfiguration vergleichen, Apache neu laden. |
-| `421 Misdirected Request` hinter Apache | `ProxyPreserveHost` steht auf `On`. Auf `Off` setzen, Apache neu laden. |
+| `421 Misdirected Request` hinter Apache | `ProxyPreserveHost Off` fehlt im `<Location /mcp>`-Block. Snippet prüfen, Apache neu laden. |
 | Antworten kommen hinter Apache verzögert oder gar nicht | Puffern oder Kompression aktiv. `flushpackets=on` und `SetEnv no-gzip 1` in `<Location /mcp>` prüfen. |
 | Warnung „keine Benutzer eingetragen“ | Gewollt im Testbetrieb. Für den Normalbetrieb mit `neuer-key` einen Benutzer anlegen. |
