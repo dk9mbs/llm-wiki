@@ -190,50 +190,107 @@ Beim Start zeigt der Server auf der Konsole (stderr):
 
 ## Als Linux-Dienst (systemd)
 
-Für den Dauerbetrieb auf einem Linux-Server liegt eine fertige Unit unter [`deploy/llm-wiki.service`](deploy/llm-wiki.service). Sie startet den Server als eigenen Systembenutzer, startet ihn nach Abstürzen neu und schreibt alle Ausgaben ins Journal.
+Für den Dauerbetrieb auf einem Linux-Server liegt eine fertige Unit unter [`deploy/llm-wiki.service`](deploy/llm-wiki.service), installiert wird sie mit [`install.sh`](install.sh). Sie startet den Server als eigenen Systembenutzer, startet ihn nach Abstürzen neu und schreibt alle Ausgaben ins Journal.
 
 ### Angenommene Pfade
 
 | Was | Pfad |
 |---|---|
-| Programm, `config.json`, `.venv` | `/opt/llm-wiki` |
+| Programm, `config.json`, `.venv` | `/usr/local/llm-wiki` |
 | Wiki-Repo (`wiki_dir`) | `/srv/claude-wiki` |
 | Home / State des Dienstes | `/var/lib/llm-wiki` (legt systemd selbst an) |
 | Dienstkonto | `llm-wiki` |
 
-Andere Pfade in der Unit bei `WorkingDirectory`, `ExecStart` und `ReadWritePaths` anpassen.
+Ein anderer Wiki-Pfad oder ein anderes Dienstkonto lässt sich beim Aufruf von `install.sh` angeben (siehe unten).
 
-### Einrichtung
+### Voraussetzungen
+
+Dienstkonto und Wiki-Repo legt `install.sh` **nicht** an. Sie müssen vorher vorhanden sein, z. B.:
 
 ```bash
-# 1. Dienstkonto ohne Login anlegen
+# Dienstkonto ohne Login
 sudo useradd --system --home-dir /var/lib/llm-wiki --shell /usr/sbin/nologin llm-wiki
 
-# 2. Programm kopieren und venv anlegen
-sudo mkdir -p /opt/llm-wiki
-sudo cp server.py requirements.txt README.md /opt/llm-wiki/
-sudo python3 -m venv /opt/llm-wiki/.venv
-sudo /opt/llm-wiki/.venv/bin/pip install -r /opt/llm-wiki/requirements.txt
+# Wiki-Repo gehört dem Dienstkonto (sonst "dubious ownership" bei git)
+sudo chown -R llm-wiki:llm-wiki /srv/claude-wiki
+```
 
-# 3. Konfiguration aus der Vorlage, wiki_dir auf den Linux-Pfad setzen
-sudo cp config.skelet /opt/llm-wiki/config.json
-sudo sed -i 's|"wiki_dir": ".*"|"wiki_dir": "/srv/claude-wiki"|' /opt/llm-wiki/config.json
-sudo /opt/llm-wiki/.venv/bin/python /opt/llm-wiki/server.py neuer-key <name> wiki:read wiki:write git:commit
+Außerdem nötig: Python 3.10+ mit `venv` (Debian/Ubuntu: `apt install python3-venv`) und `git`.
+
+### Installation mit `install.sh`
+
+Im Projektordner:
+
+```bash
+sudo ./install.sh
+```
+
+Mit anderem Wiki-Pfad oder Dienstkonto:
+
+```bash
+sudo WIKI_DIR=/data/wiki SERVICE_USER=wiki ./install.sh
+```
+
+Das Skript
+
+| Schritt | Ziel |
+|---|---|
+| kopiert `server.py`, `requirements.txt`, `README.md`, `config.skelet` | `/usr/local/llm-wiki/` |
+| legt `config.json` aus `config.skelet` an und setzt `wiki_dir` (nur, wenn sie noch fehlt) | `/usr/local/llm-wiki/config.json` (640, `root:llm-wiki`) |
+| legt das venv an und installiert `requirements.txt` | `/usr/local/llm-wiki/.venv` |
+| installiert die Unit, passt Dienstkonto und Wiki-Pfad an, aktiviert und (neu)startet den Dienst | `/etc/systemd/system/llm-wiki.service` |
+| kopiert das Apache-Snippet (nur, wenn es noch fehlt) und aktiviert `proxy`/`proxy_http` | `/etc/apache2/llm-wiki-mcp.conf` bzw. `/etc/httpd/…` |
+
+Es prüft vorab Dienstkonto, Python-Version und `venv` und warnt, wenn der Wiki-Ordner fehlt, einem anderen Benutzer gehört oder kein Git-Repo ist.
+
+Das Skript kann für **Updates** erneut ausgeführt werden: Programmdateien, venv und Unit werden aktualisiert, `config.json` und das Apache-Snippet (mit den echten Keys) bleiben unverändert. Eine neue Fassung des Snippets legt es als `llm-wiki-mcp.conf.neu` daneben.
+
+Danach einen API-Key anlegen und den Dienst neu starten:
+
+```bash
+sudo /usr/local/llm-wiki/.venv/bin/python /usr/local/llm-wiki/server.py neuer-key <name> wiki:read wiki:write git:commit
+sudo systemctl restart llm-wiki
+```
+
+Den angezeigten API-Key sofort notieren, er wird nur einmal ausgegeben.
+
+### Manuelle Installation (ohne `install.sh`)
+
+Für Systeme, auf denen `install.sh` nicht läuft, hier dieselben Schritte einzeln. Schritt 6 setzt systemd voraus; ohne systemd den Server mit dem Dienstverwalter des Systems starten (Aufruf wie in `ExecStart` der Unit).
+
+```bash
+# 1. Programm kopieren
+sudo mkdir -p /usr/local/llm-wiki
+sudo cp server.py requirements.txt README.md config.skelet /usr/local/llm-wiki/
+
+# 2. venv anlegen und Abhängigkeiten installieren
+sudo python3 -m venv /usr/local/llm-wiki/.venv
+sudo /usr/local/llm-wiki/.venv/bin/pip install -r /usr/local/llm-wiki/requirements.txt
+
+# 3. Konfiguration aus der Vorlage, wiki_dir setzen, ersten API-Key anlegen
+sudo cp /usr/local/llm-wiki/config.skelet /usr/local/llm-wiki/config.json
+sudo sed -i 's|"wiki_dir": ".*"|"wiki_dir": "/srv/claude-wiki"|' /usr/local/llm-wiki/config.json
+sudo /usr/local/llm-wiki/.venv/bin/python /usr/local/llm-wiki/server.py neuer-key <name> wiki:read wiki:write git:commit
 
 # 4. Rechte: Programm gehört root, der Dienst darf nur lesen
-sudo chown -R root:llm-wiki /opt/llm-wiki
-sudo chmod 640 /opt/llm-wiki/config.json
+sudo chown -R root:llm-wiki /usr/local/llm-wiki
+sudo chmod 640 /usr/local/llm-wiki/config.json
 
-# 5. Wiki-Repo gehört dem Dienstkonto (sonst "dubious ownership" bei git)
-sudo chown -R llm-wiki:llm-wiki /srv/claude-wiki
+# 5. Apache-Snippet kopieren (danach <Token> eintragen, siehe Apache-Abschnitt)
+sudo a2enmod proxy proxy_http
+sudo install -o root -g root -m 640 deploy/apache-llm-wiki.conf /etc/apache2/llm-wiki-mcp.conf
 
-# 6. Unit installieren und starten
+# 6. Unit installieren und starten (nur mit systemd)
 sudo cp deploy/llm-wiki.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now llm-wiki
 ```
 
-Den in Schritt 3 angezeigten API-Key sofort notieren, er wird nur einmal ausgegeben. Liegt das Wiki woanders, den Pfad im `sed`-Befehl anpassen.
+Hinweise:
+
+- **`sed -i`:** Unter BSD/macOS braucht es ein leeres Argument: `sed -i '' 's|…|…|' datei`.
+- **Apache-Pfade:** Unter RHEL/Rocky `/etc/httpd` statt `/etc/apache2`, dort gibt es kein `a2enmod` (die Proxy-Module sind meist schon geladen).
+- **Anderer Wiki-Pfad:** in Schritt 3 im `sed`-Befehl und in der Unit bei `ReadWritePaths` anpassen.
 
 ### Betrieb
 
@@ -243,8 +300,8 @@ Den in Schritt 3 angezeigten API-Key sofort notieren, er wird nur einmal ausgege
 | Log live verfolgen | `journalctl -u llm-wiki -f` |
 | Neustart (z. B. nach Änderung an `config.json`) | `sudo systemctl restart llm-wiki` |
 | Stoppen / Autostart aus | `sudo systemctl disable --now llm-wiki` |
-| Benutzer anlegen | `sudo /opt/llm-wiki/.venv/bin/python /opt/llm-wiki/server.py neuer-key <name> [scope ...]`, danach neu starten |
-| Benutzer entfernen | `sudo /opt/llm-wiki/.venv/bin/python /opt/llm-wiki/server.py entferne-user <name>`, danach neu starten |
+| Benutzer anlegen | `sudo /usr/local/llm-wiki/.venv/bin/python /usr/local/llm-wiki/server.py neuer-key <name> [scope ...]`, danach neu starten |
+| Benutzer entfernen | `sudo /usr/local/llm-wiki/.venv/bin/python /usr/local/llm-wiki/server.py entferne-user <name>`, danach neu starten |
 | Nach Änderung an der Unit | `sudo systemctl daemon-reload && sudo systemctl restart llm-wiki` |
 
 ### Hinweise
@@ -267,16 +324,13 @@ Der Rest der Site (andere Pfade, TLS, Logs) bleibt unverändert.
 
 ### Einrichtung
 
-Im Snippet `<Token>` eintragen, dann:
+`install.sh` kopiert das Snippet nach `/etc/apache2/llm-wiki-mcp.conf` (640, `root:root`) und aktiviert `proxy` und `proxy_http`. Dort den Platzhalter `<Token>` durch den API-Key ersetzen:
 
 ```bash
-sudo a2enmod proxy proxy_http
-sudo cp deploy/apache-llm-wiki.conf /etc/apache2/llm-wiki-mcp.conf
-sudo chown root:root /etc/apache2/llm-wiki-mcp.conf
-sudo chmod 640 /etc/apache2/llm-wiki-mcp.conf
+sudo nano /etc/apache2/llm-wiki-mcp.conf
 ```
 
-In der bestehenden Site unter `/etc/apache2/sites-available/` (in `sites-enabled/` liegt nur der Link darauf) innerhalb von `<VirtualHost *:443>` einbinden:
+Dann in der bestehenden Site unter `/etc/apache2/sites-available/` (in `sites-enabled/` liegt nur der Link darauf) innerhalb von `<VirtualHost *:443>` einbinden:
 
 ```apache
 <VirtualHost *:443>

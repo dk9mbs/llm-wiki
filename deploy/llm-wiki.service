@@ -1,11 +1,11 @@
 # systemd-Unit für den SecondBrainWiki-MCP-Server
 #
 # Annahmen (bei Bedarf anpassen):
-#   Programm + venv:  /opt/llm-wiki        (server.py, config.json, .venv/)
+#   Programm + venv:  /usr/local/llm-wiki  (server.py, config.json, .venv/)
 #   Wiki-Repo:        /srv/claude-wiki     (= "wiki_dir" in config.json)
 #   Dienstkonto:      llm-wiki             (Systembenutzer ohne Login)
 #
-# Installation:
+# Installation: am einfachsten mit install.sh im Projektordner, sonst von Hand:
 #   sudo cp llm-wiki.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now llm-wiki
@@ -13,7 +13,7 @@
 
 [Unit]
 Description=SecondBrainWiki MCP-Server
-Documentation=file:///opt/llm-wiki/README.md
+Documentation=file:///usr/local/llm-wiki/README.md
 After=network-online.target
 Wants=network-online.target
 # Liegt das Wiki auf einem Netzlaufwerk, den Mount hier eintragen, z. B.:
@@ -23,8 +23,8 @@ Wants=network-online.target
 Type=simple
 User=llm-wiki
 Group=llm-wiki
-WorkingDirectory=/opt/llm-wiki
-ExecStart=/opt/llm-wiki/.venv/bin/python /opt/llm-wiki/server.py
+WorkingDirectory=/usr/local/llm-wiki
+ExecStart=/usr/local/llm-wiki/.venv/bin/python /usr/local/llm-wiki/server.py
 
 # Ausgaben sofort ins Journal schreiben
 Environment=PYTHONUNBUFFERED=1
@@ -41,7 +41,7 @@ RestartSec=5
 # --- Härtung ---------------------------------------------------------------
 # Dateisystem schreibgeschützt bis auf das Wiki und das State-Verzeichnis.
 # Hinweis: config.json muss vorhanden sein – der Dienst kann sie unter
-# /opt/llm-wiki nicht selbst anlegen.
+# /usr/local/llm-wiki nicht selbst anlegen.
 ProtectSystem=strict
 ReadWritePaths=/srv/claude-wiki
 StateDirectory=llm-wiki
