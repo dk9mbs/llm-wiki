@@ -228,22 +228,33 @@ sudo ./install.sh
 Mit anderem Wiki-Pfad oder Dienstkonto:
 
 ```bash
-sudo WIKI_DIR=/data/wiki SERVICE_USER=wiki ./install.sh
+sudo WIKI_DIR=/home/claude/llm-wiki SERVICE_USER=claude ./install.sh
 ```
+
+Woher die Werte kommen (erster Treffer gilt):
+
+| Wert | 1. | 2. | 3. |
+|---|---|---|---|
+| Wiki-Pfad | `WIKI_DIR` | `wiki_dir` aus vorhandener `config.json` | `/srv/claude-wiki` |
+| Dienstkonto | `SERVICE_USER` | `User=` aus installierter Unit | `llm-wiki` |
+
+Ein späterer Aufruf ohne Variablen (z. B. für ein Update) übernimmt also die bisherigen Einstellungen. Wird `WIKI_DIR` angegeben und weicht von `config.json` ab, ändert das Skript dort nur `wiki_dir`; Benutzer und Keys bleiben erhalten.
+
+Liegt das Wiki unter `/home`, `/root` oder `/run/user`, setzt das Skript in der Unit `ProtectHome=read-only` statt `true`. Mit `true` wäre der Ordner für den Dienst unsichtbar (`PermissionError` bzw. Fehler `226/NAMESPACE`).
 
 Das Skript
 
 | Schritt | Ziel |
 |---|---|
 | kopiert `server.py`, `requirements.txt`, `README.md`, `config.skelet` | `/usr/local/llm-wiki/` |
-| legt `config.json` aus `config.skelet` an und setzt `wiki_dir` (nur, wenn sie noch fehlt) | `/usr/local/llm-wiki/config.json` (640, `root:llm-wiki`) |
+| legt `config.json` aus `config.skelet` an bzw. setzt in der vorhandenen nur `wiki_dir` | `/usr/local/llm-wiki/config.json` (640, `root:<Dienstkonto>`) |
 | legt das venv an und installiert `requirements.txt` | `/usr/local/llm-wiki/.venv` |
-| installiert die Unit, passt Dienstkonto und Wiki-Pfad an, aktiviert und (neu)startet den Dienst | `/etc/systemd/system/llm-wiki.service` |
+| installiert die Unit, passt Dienstkonto, Wiki-Pfad und `ProtectHome` an, aktiviert und (neu)startet den Dienst | `/etc/systemd/system/llm-wiki.service` |
 | kopiert das Apache-Snippet (nur, wenn es noch fehlt) und aktiviert `proxy`/`proxy_http` | `/etc/apache2/llm-wiki-mcp.conf` bzw. `/etc/httpd/…` |
 
 Es prüft vorab Dienstkonto, Python-Version und `venv` und warnt, wenn der Wiki-Ordner fehlt, einem anderen Benutzer gehört oder kein Git-Repo ist.
 
-Das Skript kann für **Updates** erneut ausgeführt werden: Programmdateien, venv und Unit werden aktualisiert, `config.json` und das Apache-Snippet (mit den echten Keys) bleiben unverändert. Eine neue Fassung des Snippets legt es als `llm-wiki-mcp.conf.neu` daneben.
+Das Skript kann für **Updates** erneut ausgeführt werden: Programmdateien, venv und Unit werden aktualisiert (mit den Werten von oben), Benutzer und Keys in `config.json` sowie das Apache-Snippet (mit den echten Keys) bleiben unverändert. Es warnt außerdem, wenn unter `/etc/systemd/system/llm-wiki.service.d/` Overrides liegen, die Vorrang vor der Unit haben. Eine neue Fassung des Snippets legt es als `llm-wiki-mcp.conf.neu` daneben.
 
 Danach einen API-Key anlegen und den Dienst neu starten:
 
@@ -290,7 +301,8 @@ Hinweise:
 
 - **`sed -i`:** Unter BSD/macOS braucht es ein leeres Argument: `sed -i '' 's|…|…|' datei`.
 - **Apache-Pfade:** Unter RHEL/Rocky `/etc/httpd` statt `/etc/apache2`, dort gibt es kein `a2enmod` (die Proxy-Module sind meist schon geladen).
-- **Anderer Wiki-Pfad:** in Schritt 3 im `sed`-Befehl und in der Unit bei `ReadWritePaths` anpassen.
+- **Anderer Wiki-Pfad:** in Schritt 3 im `sed`-Befehl und in der Unit bei `ReadWritePaths` (und im Kommentar zu `RequiresMountsFor`) anpassen. Liegt er unter `/home`, `/root` oder `/run/user`, zusätzlich `ProtectHome=read-only` setzen.
+- **Anderes Dienstkonto:** in der Unit `User=` und `Group=` sowie in Schritt 4 `root:llm-wiki` anpassen.
 
 ### Betrieb
 
@@ -498,6 +510,8 @@ append_page(
 | `Nichts zu committen – zuerst git_add aufrufen.` | Vor `git_commit` mit `git_add` Änderungen vormerken. |
 | Port 8000 belegt | Anderen `port` in `config.json` eintragen und die Client-URL anpassen. |
 | Dienst startet nicht (`systemctl status llm-wiki` zeigt `failed`) | `journalctl -u llm-wiki -n 50` lesen. Häufig: `config.json` fehlt oder ist für `llm-wiki` nicht lesbar, `wiki_dir` zeigt noch auf einen Windows-Pfad, oder das Wiki liegt nicht unter `ReadWritePaths`. |
+| Dienst bricht mit `status=226/NAMESPACE` ab | Der Pfad in `ReadWritePaths` existiert nicht. Wiki-Pfad prüfen und `install.sh` mit `WIKI_DIR=…` erneut ausführen. |
+| `PermissionError` auf `CLAUDE.md` o. Ä., Wiki liegt unter `/home` | In der Unit steht `ProtectHome=true`. Auf `read-only` setzen (macht `install.sh` automatisch), `daemon-reload`, neu starten. Auch Overrides in `llm-wiki.service.d/` prüfen. |
 | `Read-only file system` beim Schreiben (Linux-Dienst) | Das Wiki liegt außerhalb von `ReadWritePaths` in der Unit. Pfad dort eintragen, `daemon-reload`, neu starten. |
 | `403 Forbidden` von Apache (`AH01630: client denied by server configuration`) | Token fehlt oder steht nicht in der `Require expr`-Zeile. Header und Apache-Konfiguration vergleichen, Apache neu laden. |
 | `421 Misdirected Request` hinter Apache | `ProxyPreserveHost Off` fehlt im `<Location /mcp>`-Block. Snippet prüfen, Apache neu laden. |

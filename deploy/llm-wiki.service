@@ -1,6 +1,7 @@
 # systemd-Unit für den SecondBrainWiki-MCP-Server
 #
-# Annahmen (bei Bedarf anpassen):
+# Standardwerte. install.sh ersetzt Wiki-Pfad, Dienstkonto und ProtectHome
+# beim Installieren durch die tatsächlichen Werte; von Hand bitte anpassen:
 #   Programm + venv:  /usr/local/llm-wiki  (server.py, config.json, .venv/)
 #   Wiki-Repo:        /srv/claude-wiki     (= "wiki_dir" in config.json)
 #   Dienstkonto:      llm-wiki             (Systembenutzer ohne Login)
@@ -45,6 +46,9 @@ RestartSec=5
 ProtectSystem=strict
 ReadWritePaths=/srv/claude-wiki
 StateDirectory=llm-wiki
+# true blendet /home, /root und /run/user komplett aus. Liegt das Wiki dort
+# (z. B. /home/claude/llm-wiki), auf read-only setzen – ReadWritePaths gibt den
+# Wiki-Ordner trotzdem zum Schreiben frei. install.sh macht das automatisch.
 ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true

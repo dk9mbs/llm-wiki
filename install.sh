@@ -17,17 +17,22 @@
 #   - Wiki-Ordner nicht anlegen und keine Besitzrechte ändern
 #   - das Apache-Snippet nicht in eine Site einbinden und Apache nicht neu laden
 #
-# Anpassbar über Umgebungsvariablen:
-#   WIKI_DIR=/pfad/zum/wiki SERVICE_USER=llm-wiki sudo -E ./install.sh
+# Wiki-Pfad und Dienstkonto (jeweils erster Treffer gilt):
+#   WIKI_DIR:      Umgebungsvariable > "wiki_dir" aus vorhandener config.json > /srv/claude-wiki
+#   SERVICE_USER:  Umgebungsvariable > "User=" aus installierter Unit       > llm-wiki
+# Ein erneuter Aufruf ohne Variablen übernimmt also die bisherige Einstellung.
+#
+#   sudo WIKI_DIR=/home/claude/llm-wiki SERVICE_USER=claude ./install.sh
 
 set -euo pipefail
 
 APP_DIR=/usr/local/llm-wiki
 SERVICE_NAME=llm-wiki
-SERVICE_USER=${SERVICE_USER:-llm-wiki}
-WIKI_DIR=${WIKI_DIR:-/srv/claude-wiki}
 UNIT_FILE=/etc/systemd/system/${SERVICE_NAME}.service
+DROPIN_DIR=/etc/systemd/system/${SERVICE_NAME}.service.d
 APACHE_SNIPPET_NAME=llm-wiki-mcp.conf
+DEFAULT_WIKI_DIR=/srv/claude-wiki
+DEFAULT_SERVICE_USER=llm-wiki
 
 SRC_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -39,6 +44,43 @@ die()  { printf '\033[1;31mFEHLER:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "Bitte mit sudo bzw. als root ausführen."
 
+command -v python3 >/dev/null || die "python3 nicht gefunden."
+
+# --- Wiki-Pfad und Dienstkonto bestimmen --------------------------------------
+
+CONFIG_WIKI_DIR=""
+if [[ -f "$APP_DIR/config.json" ]]; then
+    CONFIG_WIKI_DIR=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("wiki_dir", ""))' \
+        "$APP_DIR/config.json") || die "$APP_DIR/config.json ist kein gültiges JSON."
+fi
+
+if [[ -n "${WIKI_DIR:-}" ]]; then
+    WIKI_DIR_SOURCE="Umgebungsvariable WIKI_DIR"
+elif [[ -n "$CONFIG_WIKI_DIR" ]]; then
+    WIKI_DIR=$CONFIG_WIKI_DIR
+    WIKI_DIR_SOURCE="vorhandene config.json"
+else
+    WIKI_DIR=$DEFAULT_WIKI_DIR
+    WIKI_DIR_SOURCE="Standardwert"
+fi
+# Nachgestellten Schrägstrich entfernen, Pfad muss absolut sein
+WIKI_DIR=${WIKI_DIR%/}
+[[ "$WIKI_DIR" == /* ]] || die "WIKI_DIR muss ein absoluter Pfad sein (ist: '$WIKI_DIR')."
+[[ "$WIKI_DIR" != *[[:space:]\|\&]* ]] || die "WIKI_DIR darf keine Leerzeichen, '|' oder '&' enthalten (ist: '$WIKI_DIR')."
+
+if [[ -n "${SERVICE_USER:-}" ]]; then
+    SERVICE_USER_SOURCE="Umgebungsvariable SERVICE_USER"
+elif [[ -f "$UNIT_FILE" ]] && grep -q '^User=' "$UNIT_FILE"; then
+    SERVICE_USER=$(sed -n 's/^User=//p' "$UNIT_FILE" | head -n 1)
+    SERVICE_USER_SOURCE="installierte Unit"
+else
+    SERVICE_USER=$DEFAULT_SERVICE_USER
+    SERVICE_USER_SOURCE="Standardwert"
+fi
+
+info "Wiki-Ordner:  $WIKI_DIR  ($WIKI_DIR_SOURCE)"
+info "Dienstkonto:  $SERVICE_USER  ($SERVICE_USER_SOURCE)"
+
 for f in server.py requirements.txt README.md config.skelet deploy/llm-wiki.service deploy/apache-llm-wiki.conf; do
     [[ -f "$SRC_DIR/$f" ]] || die "Datei fehlt im Projektordner: $f"
 done
@@ -46,7 +88,6 @@ done
 id -u "$SERVICE_USER" >/dev/null 2>&1 \
     || die "Dienstkonto '$SERVICE_USER' existiert nicht. Bitte zuerst anlegen (siehe README)."
 
-command -v python3 >/dev/null || die "python3 nicht gefunden."
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' \
     || die "Python 3.10 oder neuer erforderlich (gefunden: $(python3 --version 2>&1))."
 python3 -c 'import venv, ensurepip' 2>/dev/null \
@@ -62,11 +103,32 @@ for f in server.py requirements.txt README.md config.skelet; do
 done
 
 if [[ -f "$APP_DIR/config.json" ]]; then
-    info "config.json vorhanden – bleibt unverändert"
+    if [[ "$CONFIG_WIKI_DIR" != "$WIKI_DIR" ]]; then
+        # Nur wiki_dir ändern, Benutzer und Keys bleiben erhalten
+        info "config.json: wiki_dir '$CONFIG_WIKI_DIR' -> '$WIKI_DIR'"
+        python3 - "$APP_DIR/config.json" "$WIKI_DIR" <<'PY'
+import json, sys
+path, wiki_dir = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as f:
+    cfg = json.load(f)
+cfg["wiki_dir"] = wiki_dir
+with open(path, "w", encoding="utf-8") as f:
+    f.write(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
+PY
+    else
+        info "config.json vorhanden – bleibt unverändert"
+    fi
 else
     info "Lege config.json aus config.skelet an (wiki_dir = $WIKI_DIR)"
-    install -o root -g "$SERVICE_USER" -m 640 "$APP_DIR/config.skelet" "$APP_DIR/config.json"
-    sed -i "s|\"wiki_dir\": \".*\"|\"wiki_dir\": \"$WIKI_DIR\"|" "$APP_DIR/config.json"
+    python3 - "$APP_DIR/config.skelet" "$APP_DIR/config.json" "$WIKI_DIR" <<'PY'
+import json, sys
+src, dst, wiki_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(src, encoding="utf-8") as f:
+    cfg = json.load(f)
+cfg["wiki_dir"] = wiki_dir
+with open(dst, "w", encoding="utf-8") as f:
+    f.write(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
+PY
 fi
 chown root:"$SERVICE_USER" "$APP_DIR/config.json"
 chmod 640 "$APP_DIR/config.json"
@@ -99,12 +161,28 @@ fi
 
 info "Installiere systemd-Unit: $UNIT_FILE"
 install -o root -g root -m 644 "$SRC_DIR/deploy/llm-wiki.service" "$UNIT_FILE"
-# Dienstkonto und Wiki-Pfad an die Installation anpassen
+# Liegt das Wiki unter /home, /root oder /run/user, würde ProtectHome=true es
+# komplett ausblenden. Dann nur read-only schützen; ReadWritePaths gibt den
+# Wiki-Ordner trotzdem zum Schreiben frei.
+case "$WIKI_DIR/" in
+    /home/*|/root/*|/run/user/*) PROTECT_HOME=read-only ;;
+    *)                           PROTECT_HOME=true ;;
+esac
+
+# Dienstkonto, Wiki-Pfad und ProtectHome an die Installation anpassen
 sed -i \
     -e "s|^User=.*|User=$SERVICE_USER|" \
     -e "s|^Group=.*|Group=$SERVICE_USER|" \
-    -e "s|/srv/claude-wiki|$WIKI_DIR|g" \
+    -e "s|^ProtectHome=.*|ProtectHome=$PROTECT_HOME|" \
+    -e "s|^#   Dienstkonto: .*|#   Dienstkonto:      $SERVICE_USER|" \
+    -e "s|$DEFAULT_WIKI_DIR|$WIKI_DIR|g" \
     "$UNIT_FILE"
+info "Unit: User=$SERVICE_USER, ReadWritePaths=$WIKI_DIR, ProtectHome=$PROTECT_HOME"
+
+if [[ -d "$DROPIN_DIR" ]] && compgen -G "$DROPIN_DIR/*.conf" >/dev/null; then
+    warn "Es gibt Overrides in $DROPIN_DIR – sie haben Vorrang vor der Unit:"
+    grep -HnE '^(User|Group|ProtectHome|ReadWritePaths|ProtectSystem)=' "$DROPIN_DIR"/*.conf >&2 || true
+fi
 
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME" >/dev/null
