@@ -219,17 +219,19 @@ Außerdem nötig: Python 3.10+ mit `venv` (Debian/Ubuntu: `apt install python3-v
 
 ### Installation mit `install.sh`
 
-Im Projektordner:
+Im Projektordner, mit den Standardwerten (Wiki unter `/srv/claude-wiki`, Dienstkonto `llm-wiki`):
 
 ```bash
 sudo ./install.sh
 ```
 
-Mit anderem Wiki-Pfad oder Dienstkonto:
+Liegen Wiki und Dienstkonto woanders, beim **ersten** Aufruf beide angeben. Beispiel: Das Wiki-Repo liegt im Home-Verzeichnis von `claude`, und der Dienst soll als `claude` laufen, dem das Repo gehört:
 
 ```bash
 sudo WIKI_DIR=/home/claude/llm-wiki SERVICE_USER=claude ./install.sh
 ```
+
+Das Skript trägt dann `/home/claude/llm-wiki` in `config.json` und in der Unit ein, lässt den Dienst als `claude` laufen und setzt `ProtectHome=read-only`, weil das Wiki unter `/home` liegt. Bei späteren Updates genügt wieder `sudo ./install.sh`, die Werte werden übernommen.
 
 Woher die Werte kommen (erster Treffer gilt):
 
