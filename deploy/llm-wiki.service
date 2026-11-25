@@ -46,6 +46,14 @@ RestartSec=5
 ProtectSystem=strict
 ReadWritePaths=/srv/claude-wiki
 StateDirectory=llm-wiki
+# Zugriffsprotokoll von read_raw_file/list_raw_files: /var/log/wiki-mcp/raw-access.log
+# (systemd legt den Ordner an und gibt ihn dem Dienstkonto, trotz ProtectSystem=strict)
+LogsDirectory=wiki-mcp
+LogsDirectoryMode=0750
+# raw/ enthält Symlinks auf die Quellordner (z. B. Nextcloud-Daten). Deren Ziele
+# müssen für das Dienstkonto lesbar sein; ProtectSystem=strict erlaubt Lesen.
+# Liegen sie unter /home, darf ProtectHome nicht true sein (install.sh prüft das).
+# Die Sperrliste /etc/wiki-mcp/raw-denylist.txt ist nur lesbar.
 # true blendet /home, /root und /run/user komplett aus. Liegt das Wiki dort
 # (z. B. /home/claude/llm-wiki), auf read-only setzen – ReadWritePaths gibt den
 # Wiki-Ordner trotzdem zum Schreiben frei. install.sh macht das automatisch.

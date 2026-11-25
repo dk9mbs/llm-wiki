@@ -1,0 +1,12 @@
+# Zugriffsprotokoll von list_raw_files/read_raw_file, 30 Tage aufbewahren.
+# install.sh ersetzt llm-wiki durch das tatsächliche Dienstkonto.
+/var/log/wiki-mcp/raw-access.log {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    su llm-wiki llm-wiki
+    create 0640 llm-wiki llm-wiki
+}

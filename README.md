@@ -1,6 +1,6 @@
 # SecondBrainWiki – MCP-Server
 
-Lokaler MCP-Server, über den Claude ein Markdown-Wiki (LLM-Wiki / Second Brain) lesen, schreiben und per Git versionieren kann. Die Regeln für das Wiki stehen in der `CLAUDE.md` im Wiki-Ordner und werden dem Client beim Verbinden als Instructions übergeben.
+Lokaler MCP-Server, über den Claude ein Markdown-Wiki (LLM-Wiki / Second Brain) lesen, schreiben und per Git versionieren kann. Außerdem kann Claude die Quellen unter `raw/` (Fotos, Schaubilder, PDFs, Notizen) nur lesend ansehen. Die Regeln für das Wiki stehen in der `CLAUDE.md` im Wiki-Ordner und werden dem Client beim Verbinden als Instructions übergeben.
 
 | | |
 |---|---|
@@ -23,8 +23,10 @@ Lokaler MCP-Server, über den Claude ein Markdown-Wiki (LLM-Wiki / Second Brain)
 7. [Apache als Reverse Proxy](#apache-als-reverse-proxy)
 8. [Client anbinden](#client-anbinden)
 9. [Tools](#tools)
-10. [Sicherheit](#sicherheit)
-11. [Fehlerbehebung](#fehlerbehebung)
+10. [Lesender Zugriff auf `raw/`](#lesender-zugriff-auf-raw)
+11. [Sicherheit](#sicherheit)
+12. [Tests](#tests)
+13. [Fehlerbehebung](#fehlerbehebung)
 
 ---
 
@@ -34,6 +36,13 @@ Lokaler MCP-Server, über den Claude ein Markdown-Wiki (LLM-Wiki / Second Brain)
 - **MCP Python SDK v2** (Paket `mcp`), es wird `MCPServer` aus `mcp.server.mcpserver` verwendet
 - **Git** im `PATH` (nur für die Git-Tools nötig)
 - Der Wiki-Ordner muss **selbst** ein Git-Repository sein (nicht nur Unterordner eines anderen Repos)
+- Für `read_raw_file` (nur unter Linux nötig): `poppler-utils` (pdftotext, pdftoppm, pdfinfo), `pandoc` und `libmagic1`. Pillow, pillow-heif und python-magic kommen über `requirements.txt`. Fehlt ein Programm, meldet das Werkzeug für diesen Dateityp `convert_failed`. Ohne libmagic erkennt der Server die Dateitypen über eingebaute Signaturen.
+
+`install.sh` installiert fehlende Pakete davon selbst per `apt-get` (abschaltbar mit `SKIP_APT=1`). Von Hand:
+
+```bash
+sudo apt install poppler-utils pandoc libmagic1
+```
 
 ## Installation
 
@@ -106,6 +115,17 @@ Fehlt die Datei, legt der Server sie beim ersten Start mit Standardwerten an.
 | `host` | Adresse, auf der der Server lauscht. `127.0.0.1` = nur dieser Rechner. |
 | `port` | TCP-Port des Servers. |
 | `users` | Benutzer mit Key-Hash und Rechten, siehe unten. Leer = keine Authentifizierung. |
+
+Optionale Felder für den Zugriff auf `raw/` (fehlen sie, gelten die Standardwerte):
+
+| Feld | Standard | Bedeutung |
+|---|---|---|
+| `raw_dir` | `<wiki_dir>/raw` | Ordner mit den Symlinks auf die Quellordner |
+| `raw_denylist` | `/etc/wiki-mcp/raw-denylist.txt` | Sperrliste, siehe [Sperrliste](#sperrliste) |
+| `raw_log` | `/var/log/wiki-mcp/raw-access.log` | Zugriffsprotokoll |
+| `thumbs_dir` | `<wiki_dir>/state/thumbs` | Cache für verkleinerte Bilder; muss im Wiki-Repo in `.gitignore` stehen |
+
+Mit der Umgebungsvariable `WIKI_MCP_CONFIG` lässt sich eine andere `config.json` verwenden (z. B. für Tests).
 
 Änderungen an `config.json` werden erst nach einem **Neustart** des Servers wirksam.
 
@@ -448,6 +468,8 @@ async with http_client:
 | `git_status()` | `wiki:read` | `git status --short --branch` im Wiki. |
 | `git_add(paths=None)` | `git:commit` | Ohne `paths` wie `git add .`, sonst nur die angegebenen Dateien/Ordner. Gibt die vorgemerkten Änderungen zurück. |
 | `git_commit(message)` | `git:commit` | Commit der vorgemerkten Änderungen. Nachricht darf nicht leer sein. Hängt `MCP-Benutzer: <name>` an die Commit-Nachricht an. |
+| `list_raw_files(relative_path="", recursive=False, max_depth=3)` | `wiki:read` | Listet einen Ordner unter `raw/` (nur lesen). Details siehe [Lesender Zugriff auf `raw/`](#lesender-zugriff-auf-raw). |
+| `read_raw_file(relative_path, max_px=1600, pages=None, render=False, offset=1, limit=2000)` | `wiki:read` | Liest eine Datei unter `raw/`: Bilder als Bild, Text/PDF/Office als Text, PDF-Seiten auf Wunsch als Bild. |
 
 Ein `git push` ist bewusst **nicht** vorgesehen.
 
@@ -471,6 +493,98 @@ append_page(
 → Angehängt an wiki/log.md (55 Bytes).
 ```
 
+## Lesender Zugriff auf `raw/`
+
+`raw/` im Wiki-Ordner enthält Symlinks auf die Quellordner (z. B. `Greiffeld`, `Notizen`, `Fahrzeuge` in der Nextcloud). Es ist nicht in Git. Die beiden Werkzeuge lesen dort nur. Schreiben, Löschen, Verschieben oder Umbenennen ist nicht vorgesehen. Gelesenes kommt nur über die Operationen aus der `CLAUDE.md` ins Wiki.
+
+### `list_raw_files`
+
+Gibt JSON mit `entries` und `truncated` zurück. Je Eintrag: `path` (relativ zu `raw/`), `type` (`file`/`dir`), `size`, `mtime` (ISO 8601), `kind` (`image`, `text`, `pdf`, `office`, `other`, aus der Endung) und `blocked`.
+
+- Versteckte Dateien und Ordner (`.*`) sowie Sperr- und Systemdateien (`.~lock.*#`, `Thumbs.db`, `._*`, `*.part`) werden nicht gezeigt. Ebenso Symlinks, die aus den erlaubten Ordnern herauszeigen.
+- Sortiert nach Pfad, je Ordner zuerst die Unterordner (jeweils mit ihrem Inhalt), dann die Dateien.
+- Höchstens 2000 Einträge, darüber `truncated: true`. `max_depth` höchstens 5.
+- Kein Hash in der Liste, den liefert `read_raw_file`.
+
+### `read_raw_file`
+
+Der Dateityp wird am Inhalt erkannt (libmagic), nicht nur an der Endung.
+
+| Art | Rückgabe |
+|---|---|
+| Bild (JPEG, PNG, WebP, HEIC, GIF: erstes Bild) | JPEG, Qualität 85, längste Kante `max_px` (200–2400), EXIF-Drehung angewendet, **alle Metadaten entfernt** (EXIF, GPS, XMP, IPTC, ICC). Über 1,5 MB: erst Qualität 70, dann kleiner. |
+| Text (`.md`, `.txt`, `.csv`, `.json`, …) | UTF-8, Zeilen `offset` bis `offset+limit`, höchstens 200 KB |
+| E-Mail (`.eml`) | Nur Kopfzeilen (From, To, Cc, Date, Subject) und Textteil, keine Anhänge |
+| PDF | Text per `pdftotext -layout` für `pages` (z. B. `2` oder `1-3`). Mit `render=true` je Seite ein Bild (150 dpi, dann auf `max_px`), höchstens 5 Seiten je Aufruf. |
+| ODT/DOCX | Text per `pandoc -t gfm`, eingebettete Bilder nicht |
+| ODS/XLSX | Je Blatt CSV mit Überschrift `# Blatt: <Name>` (Zahlen und Datumswerte wie gespeichert) |
+| Sonstige | Fehler `unsupported` mit den Metadaten |
+
+Jede Antwort endet mit einem Textteil mit Metadaten (JSON): `path`, `size`, `mtime`, `sha256` (Hash der Originaldatei, Format wie `sha256sum`), `mime`. Dazu je nach Art `image` (`original`, `delivered`, `DateTimeOriginal`), `pages` (`total`, `delivered`) oder `lines` (`total`, `offset`, `delivered`, `next_offset`, falls abgeschnitten).
+
+Verkleinerte Bilder werden unter `state/thumbs/<sha256>_<max_px>.jpg` zwischengespeichert. Der Ordner muss in der `.gitignore` des Wikis stehen; sonst warnt der Server beim Start.
+
+### Fehlercodes
+
+Fehler kommen als MCP-Fehler (`isError: true`) im Format `<code>: <Satz>`. Pfade außerhalb von `raw/` werden nie genannt.
+
+| Code | Bedeutung |
+|---|---|
+| `not_found` | Datei oder Ordner gibt es unter `raw/` nicht. |
+| `invalid_path` | Pfad ist ungültig (absolut, `..`, versteckt, Backslash, Steuerzeichen, über 512 Zeichen). |
+| `outside_raw` | Pfad zeigt außerhalb der erlaubten Ordner. |
+| `blocked` | Datei steht auf der Sperrliste (oder die Sperrliste fehlt). |
+| `too_large` | Datei ist größer als 100 MB (wird dafür nicht gelesen). |
+| `unsupported` | Dateityp wird nicht unterstützt. |
+| `is_directory` | Pfad ist ein Ordner. |
+| `convert_failed` | Umwandlung fehlgeschlagen (pandoc, pdftotext, Pillow, ungültiger Seitenbereich). |
+
+### Pfadprüfung
+
+Jeder Aufruf durchläuft vor dem Öffnen dieselbe Prüfung:
+
+1. Kein absoluter Pfad, kein `.`/`..`-Segment, kein Backslash, keine Steuerzeichen, höchstens 512 Zeichen. Unicode wird auf NFC normalisiert; Namen, die auf der Platte in NFD stehen (Umlaute aus macOS-Uploads), werden trotzdem gefunden.
+2. Kein Segment ist versteckt oder eine Sperr-/Systemdatei.
+3. Erlaubte Wurzeln sind die `realpath` der Einträge direkt in `raw/`, einmal beim Start ermittelt. Jeder Zwischenschritt und das Ziel müssen darin liegen. Ein Symlink in einem Unterordner, der woandershin zeigt, wird mit `outside_raw` abgewiesen. Eine Wurzel, die das Wiki-Repo selbst enthält, wird ignoriert.
+4. Sperrliste (geprüft für den angefragten Pfad und das tatsächliche Ziel).
+5. Öffnen mit `O_RDONLY | O_NOFOLLOW | O_NONBLOCK`. Temporäre Dateien nur in `state/thumbs/` bzw. einem eigenen Temp-Ordner.
+6. Größe: Original höchstens 100 MB, Bild höchstens 1,5 MB, Text höchstens 200 KB.
+
+pandoc, pdftotext, pdftoppm und pdfinfo laufen ohne Shell mit 30 s Zeitlimit. Dateinamen mit Leer- oder Sonderzeichen lösen daher nichts aus.
+
+### Sperrliste
+
+`/etc/wiki-mcp/raw-denylist.txt`, Eigentümer `root`, für das Dienstkonto nur lesbar (`install.sh` legt sie aus `deploy/raw-denylist.txt` an). Ein Glob-Muster je Zeile, ohne Groß-/Kleinschreibung, `#` für Kommentare. Die Datei wird bei jedem Aufruf neu gelesen, Änderungen gelten also ohne Neustart. **Fehlt sie oder ist sie nicht lesbar, ist `raw/` komplett gesperrt.**
+
+```text
+*Zugangsdaten*
+*passw*
+*.kdbx
+*keepass*
+*tan-liste*
+*.pem
+*.key
+```
+
+`list_raw_files` zeigt gesperrte Dateien mit `blocked: true`.
+
+### Zugriffsprotokoll
+
+Je Aufruf eine Zeile in `/var/log/wiki-mcp/raw-access.log`, getrennt durch Tabulatoren: Zeit, Werkzeug, Pfad, Ergebnis (`ok`, `blocked`, `denied`, `error`), ausgelieferte Bytes, MCP-Benutzer. Kein Dateiinhalt. Den Ordner legt systemd an (`LogsDirectory=wiki-mcp`); `install.sh` richtet die Rotation über logrotate ein (täglich, 30 Tage). Ist die Datei nicht beschreibbar, landen die Zeilen im Journal.
+
+### Ergänzung für die `CLAUDE.md` des Wikis
+
+Im Abschnitt „Umgebung“ unter dem Eintrag zu `raw/`:
+
+```markdown
+- Werkzeuge list_raw_files und read_raw_file (MCP-Server „Wiki vom Haus“):
+  lesender Zugriff auf raw/ auch aus dem Chat. Bilder kommen verkleinert und
+  ohne EXIF, mit sha256 im Ergebnis. Gesperrte Dateien siehe
+  /etc/wiki-mcp/raw-denylist.txt (nicht änderbar). Gelesenes wird wie jede
+  Quelle nur über INGEST, FOTOS oder eine Chat-Angabe eingearbeitet;
+  Fotos werden weiterhin nie kopiert oder ins Repo übernommen.
+```
+
 ## Sicherheit
 
 **Netzwerk**
@@ -492,9 +606,33 @@ append_page(
 - Umgebungsvariablen, die Git auf ein anderes Repo umlenken könnten (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, …), werden ignoriert.
 - Pfade werden nach `--` übergeben und können daher nicht als Git-Optionen interpretiert werden.
 
+**`raw/`**
+- Nur lesend, Pfadprüfung und Sperrliste wie unter [Pfadprüfung](#pfadprüfung) beschrieben.
+- Bilder werden aus den reinen Pixeln neu kodiert. EXIF (inkl. GPS), XMP, IPTC und ICC-Profile gehen dabei verloren; nur `DateTimeOriginal` wird als Metadatum mitgeliefert.
+- Die Sperrliste gehört `root`. Weder der Server noch Claude Code auf dem Server können sie ändern.
+
 **Grenzen**
 - NTFS-Rechte gelten für den Server-Prozess als Ganzes, nicht pro MCP-Benutzer.
 - Regeln in der `CLAUDE.md` sind Anweisungen an das Modell, keine technische Sperre. Was wirklich verboten sein soll, muss im Server geprüft werden.
+
+## Tests
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest -v tests/
+```
+
+`tests/test_raw_tools.py` baut in einem Temp-Ordner eine eigene Testwelt (Wiki-Repo, `raw/` mit Symlinks, Sperrliste, Protokoll) und prüft die Abnahmekriterien über einen echten MCP-Client. Tests, die Symlinks, `pandoc` oder `poppler-utils` brauchen, werden ohne diese übersprungen (z. B. unter Windows); vollständig laufen sie unter Linux.
+
+`tests/test_abnahme_live.py` prüft dieselben Kriterien mit den echten Dateien auf dem Server, nur lesend. Aus dem Projektordner (Checkout) heraus:
+
+```bash
+sudo /usr/local/llm-wiki/.venv/bin/pip install -r requirements-dev.txt   # einmalig
+sudo -u claude WIKI_MCP_LIVE=1 WIKI_MCP_CONFIG=/usr/local/llm-wiki/config.json \
+    /usr/local/llm-wiki/.venv/bin/python -m pytest -v -p no:cacheprovider tests/test_abnahme_live.py
+```
+
+Optional: `WIKI_MCP_LIVE_FOTO` (Raumfoto mit GPS), `WIKI_MCP_LIVE_PDF`, `WIKI_MCP_LIVE_SYMLINK` (Pfad über einen Symlink nach außen), jeweils relativ zu `raw/`. Am Ende prüft der Test, dass die gelesenen Dateien unverändert sind, jeder Aufruf im Zugriffsprotokoll steht und `git status` im Wiki gleich geblieben ist.
 
 ## Fehlerbehebung
 
@@ -518,4 +656,9 @@ append_page(
 | `403 Forbidden` von Apache (`AH01630: client denied by server configuration`) | Token fehlt oder steht nicht in der `Require expr`-Zeile. Header und Apache-Konfiguration vergleichen, Apache neu laden. |
 | `421 Misdirected Request` hinter Apache | `ProxyPreserveHost Off` fehlt im `<Location /mcp>`-Block. Snippet prüfen, Apache neu laden. |
 | Antworten kommen hinter Apache verzögert oder gar nicht | Puffern oder Kompression aktiv. `flushpackets=on` und `SetEnv no-gzip 1` in `<Location /mcp>` prüfen. |
+| `read_raw_file`/`list_raw_files` melden immer `blocked` | Sperrliste `/etc/wiki-mcp/raw-denylist.txt` fehlt oder ist für das Dienstkonto nicht lesbar. `install.sh` erneut ausführen. |
+| `outside_raw` für einen Ordner direkt in `raw/` | Erlaubte Wurzeln werden beim Start ermittelt. Nach neuen Symlinks in `raw/` den Dienst neu starten. Das Ziel muss für das Dienstkonto lesbar sein. |
+| `convert_failed: pdftotext ist auf dem Server nicht installiert` (oder pandoc/pdftoppm/pdfinfo) | `install.sh` erneut ausführen oder `sudo apt install poppler-utils pandoc` |
+| Warnung „state/thumbs/ steht im Wiki-Repo nicht in .gitignore“ | Im Wiki `state/thumbs/` in die `.gitignore` eintragen und committen. |
+| Warnung „Zugriffsprotokoll … nicht beschreibbar“ | `LogsDirectory=wiki-mcp` fehlt in der Unit (neue Unit über `install.sh` installieren) oder `raw_log` zeigt auf einen schreibgeschützten Ort. |
 | Warnung „keine Benutzer eingetragen“ | Gewollt im Testbetrieb. Für den Normalbetrieb mit `neuer-key` einen Benutzer anlegen. |

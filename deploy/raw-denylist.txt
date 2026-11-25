@@ -1,0 +1,14 @@
+# Sperrliste für read_raw_file / list_raw_files
+# Ein Glob-Muster je Zeile, ohne Groß-/Kleinschreibung; * passt auch über '/' hinweg.
+# Geprüft wird der Pfad relativ zu raw/ und das tatsächliche Ziel eines Symlinks.
+# Zeilen mit # sind Kommentare. Änderungen gelten ab dem nächsten Aufruf.
+#
+# Liegt unter /etc/wiki-mcp/raw-denylist.txt, Eigentümer root, für das Dienstkonto
+# nur lesbar. Fehlt die Datei, ist raw/ komplett gesperrt.
+*Zugangsdaten*
+*passw*
+*.kdbx
+*keepass*
+*tan-liste*
+*.pem
+*.key

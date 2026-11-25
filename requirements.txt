@@ -6,3 +6,9 @@ mcp>=2.3.0,<3
 
 # wird in server.py direkt importiert (AnyHttpUrl)
 pydantic>=2.14,<3
+
+# read_raw_file: Bilder verkleinern, EXIF entfernen; HEIC von Handyfotos
+Pillow>=11,<13
+pillow-heif>=0.18
+# read_raw_file: Typerkennung am Inhalt (braucht libmagic, Debian: libmagic1)
+python-magic>=0.4.27

@@ -10,10 +10,15 @@
 #   - legt /usr/local/llm-wiki/.venv an und installiert requirements.txt
 #   - installiert die systemd-Unit, aktiviert und (neu)startet den Dienst
 #   - kopiert das Apache-Snippet nach /etc/apache2 bzw. /etc/httpd (bestehendes bleibt unverändert)
+#   - legt die Sperrliste /etc/wiki-mcp/raw-denylist.txt an (bestehende bleibt unverändert)
+#   - installiert die logrotate-Regel für /var/log/wiki-mcp/raw-access.log
+#   - installiert fehlende Pakete für read_raw_file per apt-get (poppler-utils, pandoc, libmagic1);
+#     abschaltbar mit SKIP_APT=1, ohne apt-get nur Hinweis
 #
 # Was es NICHT macht:
 #   - kein Dienstkonto anlegen (muss bereits existieren)
 #   - keine MCP-Benutzer/API-Keys anlegen
+#   - außer den drei Paketen oben keine Systempakete installieren (z. B. python3-venv, git)
 #   - Wiki-Ordner nicht anlegen und keine Besitzrechte ändern
 #   - das Apache-Snippet nicht in eine Site einbinden und Apache nicht neu laden
 #
@@ -81,7 +86,7 @@ fi
 info "Wiki-Ordner:  $WIKI_DIR  ($WIKI_DIR_SOURCE)"
 info "Dienstkonto:  $SERVICE_USER  ($SERVICE_USER_SOURCE)"
 
-for f in server.py requirements.txt README.md config.skelet deploy/llm-wiki.service deploy/apache-llm-wiki.conf; do
+for f in server.py requirements.txt README.md config.skelet deploy/llm-wiki.service deploy/apache-llm-wiki.conf \n         deploy/raw-denylist.txt deploy/logrotate-wiki-mcp; do
     [[ -f "$SRC_DIR/$f" ]] || die "Datei fehlt im Projektordner: $f"
 done
 
@@ -146,6 +151,46 @@ info "Installiere Abhängigkeiten aus requirements.txt"
 "$APP_DIR/.venv/bin/pip" install --quiet --upgrade pip
 "$APP_DIR/.venv/bin/pip" install --quiet -r "$APP_DIR/requirements.txt"
 
+# --- raw/: Programme, Sperrliste, Protokoll --------------------------------------
+
+missing=()
+for tool in pdftotext pdftoppm pdfinfo; do
+    command -v "$tool" >/dev/null || { missing+=(poppler-utils); break; }
+done
+command -v pandoc >/dev/null || missing+=(pandoc)
+ldconfig -p 2>/dev/null | grep -q 'libmagic\.so\.1' || missing+=(libmagic1)
+if (( ${#missing[@]} )); then
+    if [[ "${SKIP_APT:-0}" != 1 ]] && command -v apt-get >/dev/null; then
+        info "Installiere Pakete für read_raw_file: ${missing[*]}"
+        if ! { DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+               && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}"; }; then
+            warn "apt-get install ${missing[*]} fehlgeschlagen – read_raw_file meldet für PDF/Office dann convert_failed."
+        fi
+    else
+        warn "Für read_raw_file fehlen Pakete: ${missing[*]} (Debian/Ubuntu: apt install ${missing[*]})"
+    fi
+fi
+
+DENYLIST=/etc/wiki-mcp/raw-denylist.txt
+install -d -o root -g root -m 755 /etc/wiki-mcp
+if [[ -f "$DENYLIST" ]]; then
+    info "Sperrliste vorhanden – bleibt unverändert: $DENYLIST"
+else
+    info "Lege Sperrliste an: $DENYLIST (root, für $SERVICE_USER nur lesbar)"
+    install -o root -g "$SERVICE_USER" -m 640 "$SRC_DIR/deploy/raw-denylist.txt" "$DENYLIST"
+fi
+# Rechte immer durchsetzen: das Dienstkonto darf die Liste lesen, aber nie ändern
+chown root:"$SERVICE_USER" "$DENYLIST"
+chmod 640 "$DENYLIST"
+
+if [[ -d /etc/logrotate.d ]]; then
+    info "Installiere logrotate-Regel: /etc/logrotate.d/wiki-mcp (30 Tage)"
+    sed "s/llm-wiki/$SERVICE_USER/g" "$SRC_DIR/deploy/logrotate-wiki-mcp" > /etc/logrotate.d/wiki-mcp
+    chmod 644 /etc/logrotate.d/wiki-mcp
+else
+    warn "logrotate nicht gefunden – /var/log/wiki-mcp/raw-access.log wird nicht rotiert."
+fi
+
 # --- Wiki-Ordner (nur prüfen) -------------------------------------------------
 
 if [[ ! -d "$WIKI_DIR" ]]; then
@@ -155,6 +200,9 @@ else
     [[ "$owner" == "$SERVICE_USER" ]] \
         || warn "$WIKI_DIR gehört '$owner', nicht '$SERVICE_USER' – git meldet sonst 'dubious ownership'."
     [[ -d "$WIKI_DIR/.git" ]] || warn "$WIKI_DIR ist (noch) kein Git-Repository."
+    if [[ -d "$WIKI_DIR/.git" ]] && ! git -C "$WIKI_DIR" check-ignore -q --no-index state/thumbs/probe.jpg 2>/dev/null; then
+        warn "state/thumbs/ fehlt in $WIKI_DIR/.gitignore – dort liegt der Bild-Cache von read_raw_file."
+    fi
 fi
 
 # --- systemd ------------------------------------------------------------------
@@ -168,6 +216,15 @@ case "$WIKI_DIR/" in
     /home/*|/root/*|/run/user/*) PROTECT_HOME=read-only ;;
     *)                           PROTECT_HOME=true ;;
 esac
+# Gleiches gilt für die Ziele der Symlinks in raw/ (read_raw_file muss sie lesen)
+if [[ -d "$WIKI_DIR/raw" ]]; then
+    for link in "$WIKI_DIR"/raw/*; do
+        [[ -e "$link" ]] || continue
+        case "$(readlink -f "$link")/" in
+            /home/*|/root/*|/run/user/*) PROTECT_HOME=read-only ;;
+        esac
+    done
+fi
 
 # Dienstkonto, Wiki-Pfad und ProtectHome an die Installation anpassen
 sed -i \

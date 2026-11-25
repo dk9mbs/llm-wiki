@@ -1,0 +1,2 @@
+# Nur für die Tests (tests/)
+pytest>=8
