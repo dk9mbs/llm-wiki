@@ -225,14 +225,29 @@ def _require(scope: str) -> None:
 
 def _safe_path(relative_path: str) -> Path:
     """Löst einen Pfad relativ zum Wiki auf und blockiert alles außerhalb
-    des Wiki-Ordners sowie alles im .git-Verzeichnis."""
+    des Wiki-Ordners sowie alles im .git-Verzeichnis und unter raw/."""
+    # raw/ nur über list_raw_files/read_raw_file (Sperrliste, Protokoll, nur lesen).
+    # Zuerst am Pfadtext prüfen: Symlinks in raw/ würden sonst als "außerhalb" gemeldet.
+    first = relative_path.replace("\\", "/").lstrip("/").split("/", 1)[0]
+    if first.casefold() == "raw":
+        raise ToolError(f"'{relative_path}' liegt unter raw/ und gehört nicht zum Wiki. "
+                        "Rohquellen mit list_raw_files/read_raw_file lesen (gleicher Pfad); raw/ ist schreibgeschützt.")
     target = (WIKI_DIR / relative_path).resolve()
     # is_relative_to statt startswith: sonst würde z. B. "Claude_Wiki2" durchrutschen
     if not target.is_relative_to(WIKI_DIR):
         raise ValueError("Zugriff außerhalb des Wiki-Ordners verboten.")
     if ".git" in target.relative_to(WIKI_DIR).parts:
         raise ValueError("Zugriff auf das .git-Verzeichnis ist verboten.")
+    if _under_raw_dir(target):
+        raise ToolError(f"'{relative_path}' liegt unter raw/ und gehört nicht zum Wiki. "
+                        "Rohquellen mit list_raw_files/read_raw_file lesen; raw/ ist schreibgeschützt.")
     return target
+
+
+def _under_raw_dir(path: Path) -> bool:
+    """True, wenn der Pfad im raw-Ordner liegt (falls dieser innerhalb des Wikis liegt)."""
+    raw = RAW_DIR.resolve()
+    return raw.is_relative_to(WIKI_DIR) and path.is_relative_to(raw)
 
 
 def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -276,7 +291,10 @@ def _ensure_wiki_repo() -> None:
 def read_page(relative_path: str) -> str:
     """Liest eine Markdown-Datei aus dem Wiki (z. B. 'index.md' oder 'wiki/projekt.md')."""
     _require("wiki:read")
-    return _safe_path(relative_path).read_text(encoding="utf-8")
+    target = _safe_path(relative_path)
+    if not target.is_file():  # Meldung ohne Serverpfad
+        raise ToolError(f"'{relative_path}' gibt es im Wiki nicht. Mit list_wiki_files nachsehen.")
+    return target.read_text(encoding="utf-8")
 
 
 @mcp.tool()
@@ -337,6 +355,8 @@ def list_wiki_files() -> list[str]:
         str(p.relative_to(WIKI_DIR))
         for p in WIKI_DIR.rglob("*.md")
         if ".git" not in p.relative_to(WIKI_DIR).parts
+        and p.relative_to(WIKI_DIR).parts[0].casefold() != "raw"
+        and not _under_raw_dir(p)
     ]
 
 
@@ -444,8 +464,18 @@ except Exception:  # ImportError oder fehlende libmagic
     _MAGIC = None
 
 RAW_DIR = Path(CONFIG.get("raw_dir") or WIKI_DIR / "raw").absolute()
-RAW_DENYLIST = Path(CONFIG.get("raw_denylist") or "/etc/wiki-mcp/raw-denylist.txt")
-RAW_LOG = Path(CONFIG.get("raw_log") or "/var/log/wiki-mcp/raw-access.log")
+# Standardorte: unter Linux wie von install.sh eingerichtet, unter Windows neben server.py
+if os.name == "nt":
+    _APP_DIR = Path(__file__).resolve().parent
+    _DEFAULT_DENYLIST, _DEFAULT_RAW_LOG = _APP_DIR / "raw-denylist.txt", _APP_DIR / "raw-access.log"
+else:
+    _DEFAULT_DENYLIST = Path("/etc/wiki-mcp/raw-denylist.txt")
+    _DEFAULT_RAW_LOG = Path("/var/log/wiki-mcp/raw-access.log")
+RAW_DENYLIST = Path(CONFIG.get("raw_denylist") or _DEFAULT_DENYLIST)
+RAW_LOG = Path(CONFIG.get("raw_log") or _DEFAULT_RAW_LOG)
+if not RAW_DENYLIST.is_file():
+    _warn(f"Sperrliste {RAW_DENYLIST} fehlt – read_raw_file sperrt raw/ komplett "
+          "(Vorlage: deploy/raw-denylist.txt, oder 'raw_denylist' in config.json setzen).")
 THUMBS_DIR = Path(CONFIG.get("thumbs_dir") or WIKI_DIR / "state" / "thumbs").absolute()
 
 MAX_FILE_BYTES = 100 * 1024 * 1024    # Originaldatei
@@ -671,6 +701,11 @@ def _resolve_raw(relative_path: object, allow_empty: bool = False) -> tuple[str,
     """Schritte 1–3: liefert (Pfad relativ zu raw/, realpath, '<Wurzel>/<Pfad>').
     Jeder Zwischenschritt muss innerhalb einer erlaubten Wurzel liegen."""
     segs = _check_rel(relative_path, allow_empty)
+    # Zitierform 'raw/…' aus dem Wiki ebenfalls annehmen (außer es gibt eine Wurzel namens 'raw')
+    if segs and segs[0] == "raw" and "raw" not in RAW_ROOTS:
+        segs = segs[1:]
+        if not segs and not allow_empty:
+            raise RawError("invalid_path")
     if not segs:
         return "", RAW_DIR, ""
     if segs[0] not in RAW_ROOTS:
@@ -712,7 +747,7 @@ def _iso(ts: float) -> str:
 
 @mcp.tool()
 def list_raw_files(
-    relative_path: Annotated[str, Field(description="Ordner relativ zu raw/, z. B. 'Greiffeld/Handbuch/media'; leer = raw/ selbst")] = "",
+    relative_path: Annotated[str, Field(description="Ordner relativ zu raw/, z. B. 'Greiffeld/Handbuch/media' (vorangestelltes 'raw/' ist erlaubt); leer = raw/ selbst")] = "",
     recursive: Annotated[bool, Field(description="Unterordner mit auflisten")] = False,
     max_depth: Annotated[int, Field(ge=1, le=5, description="Höchste Tiefe bei recursive (1–5)")] = 3,
 ) -> str:
@@ -1149,7 +1184,7 @@ def _read_office(f, real: Path, ext: str) -> str:
 
 @mcp.tool()
 def read_raw_file(
-    relative_path: Annotated[str, Field(description="Datei relativ zu raw/, z. B. 'Greiffeld/Handbuch/media/02-shelly-plus-i4-anschlussschema.jpg'")],
+    relative_path: Annotated[str, Field(description="Datei relativ zu raw/, z. B. 'Greiffeld/Handbuch/media/02-shelly-plus-i4-anschlussschema.jpg' (vorangestelltes 'raw/' ist erlaubt)")],
     max_px: Annotated[int, Field(ge=200, le=2400, description="Längste Bildkante in Pixel (200–2400)")] = 1600,
     pages: Annotated[str | None, Field(description="Nur PDF: Seitenbereich wie '1-3' oder '2'; leer = alle")] = None,
     render: Annotated[bool, Field(description="Nur PDF: Seiten als Bild statt Text, höchstens 5 Seiten je Aufruf")] = False,

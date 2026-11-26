@@ -21,3 +21,7 @@ Thumbs.db
 
 # Tests
 .pytest_cache/
+
+# Windows-Standardorte für Sperrliste und Zugriffsprotokoll (neben server.py)
+/raw-denylist.txt
+/raw-access.log

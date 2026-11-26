@@ -121,9 +121,13 @@ Optionale Felder für den Zugriff auf `raw/` (fehlen sie, gelten die Standardwer
 | Feld | Standard | Bedeutung |
 |---|---|---|
 | `raw_dir` | `<wiki_dir>/raw` | Ordner mit den Symlinks auf die Quellordner |
-| `raw_denylist` | `/etc/wiki-mcp/raw-denylist.txt` | Sperrliste, siehe [Sperrliste](#sperrliste) |
-| `raw_log` | `/var/log/wiki-mcp/raw-access.log` | Zugriffsprotokoll |
+| `raw_denylist` | Linux: `/etc/wiki-mcp/raw-denylist.txt`, Windows: `raw-denylist.txt` neben `server.py` | Sperrliste, siehe [Sperrliste](#sperrliste). Fehlt sie, ist raw/ komplett gesperrt; Vorlage: `deploy/raw-denylist.txt` |
+| `raw_log` | Linux: `/var/log/wiki-mcp/raw-access.log`, Windows: `raw-access.log` neben `server.py` | Zugriffsprotokoll |
 | `thumbs_dir` | `<wiki_dir>/state/thumbs` | Cache für verkleinerte Bilder; muss im Wiki-Repo in `.gitignore` stehen |
+
+`config.skelet` enthält bewusst keine `raw_*`-Pfade: `install.sh` legt daraus unter Linux die `config.json` an, und Windows-Pfade würden dort nicht funktionieren. Unter Windows `raw_dir` von Hand in `config.json` eintragen, z. B. `"raw_dir": "F:\Quellen\Claude_Raw"`.
+
+Pfade für `list_raw_files` und `read_raw_file` gelten relativ zu raw/; die Zitierform `raw/…` aus dem Wiki wird ebenfalls angenommen.
 
 Mit der Umgebungsvariable `WIKI_MCP_CONFIG` lässt sich eine andere `config.json` verwenden (z. B. für Tests).
 

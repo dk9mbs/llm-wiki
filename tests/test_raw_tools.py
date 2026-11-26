@@ -547,6 +547,46 @@ def test_fehlercodes(world):
     assert meta["size"] == 4096 and len(meta["sha256"]) == 64
 
 
+def test_zitierform_mit_raw_praefix(world):
+    res = call(world, "read_raw_file", relative_path="raw/" + NETZ_MD)
+    assert not res.is_error, res.texts
+    assert res.meta["path"] == NETZ_MD
+    liste = call(world, "list_raw_files", relative_path="raw/Greiffeld/Handbuch")
+    assert not liste.is_error, liste.texts
+    wurzel = call(world, "list_raw_files", relative_path="raw")
+    assert not wurzel.is_error, wurzel.texts
+    assert err(world, "read_raw_file", relative_path="raw/") == "invalid_path"
+    assert err(world, "read_raw_file", relative_path="raw/" + ZUGANG) == "blocked"
+    assert err(world, "read_raw_file", relative_path="raw/../CLAUDE.md") == "invalid_path"
+
+
+def test_read_page_verweist_auf_read_raw_file(world):
+    from mcp import Client
+
+    async def run(path, tool="read_page", **extra):
+        async with Client(world.server.mcp) as client:
+            return await client.call_tool(tool, {"relative_path": path, **extra})
+
+    for path in ("raw/" + NETZ_MD, "raw\\Greiffeld\\x.txt", "./raw/" + NETZ_MD, "wiki/gibtsnicht.md"):
+        res = anyio.run(run, path)
+        assert res.is_error, path
+        text = res.content[0].text
+        assert str(world.base) not in text  # kein Serverpfad in der Meldung
+        assert ("read_raw_file" in text) == ("raw" in path)
+    assert anyio.run(run, "wiki/index.md").content[0].text == "# Index\n"
+    # raw/ ist auch für die schreibenden Wiki-Werkzeuge tabu
+    assert anyio.run(lambda: run("raw/Greiffeld/neu.md", "write_page", content="x")).is_error
+    assert not (world.wiki / "raw/Greiffeld/neu.md").exists()
+    assert not (world.cloud / "Greiffeld/neu.md").exists()
+
+    async def liste():
+        async with Client(world.server.mcp) as client:
+            return await client.call_tool("list_wiki_files", {})
+
+    dateien = anyio.run(liste).structured_content["result"]
+    assert dateien and not any(d.replace("\\", "/").startswith("raw/") for d in dateien)
+
+
 def test_typ_am_inhalt_nicht_an_endung(world):
     res = call(world, "read_raw_file", relative_path="Greiffeld/fake.jpg")
     assert not res.is_error and not res.images
