@@ -86,7 +86,8 @@ fi
 info "Wiki-Ordner:  $WIKI_DIR  ($WIKI_DIR_SOURCE)"
 info "Dienstkonto:  $SERVICE_USER  ($SERVICE_USER_SOURCE)"
 
-for f in server.py requirements.txt README.md config.skelet deploy/llm-wiki.service deploy/apache-llm-wiki.conf \n         deploy/raw-denylist.txt deploy/logrotate-wiki-mcp; do
+for f in server.py requirements.txt README.md config.skelet deploy/llm-wiki.service deploy/apache-llm-wiki.conf \
+         deploy/raw-denylist.txt deploy/logrotate-wiki-mcp; do
     [[ -f "$SRC_DIR/$f" ]] || die "Datei fehlt im Projektordner: $f"
 done
 
